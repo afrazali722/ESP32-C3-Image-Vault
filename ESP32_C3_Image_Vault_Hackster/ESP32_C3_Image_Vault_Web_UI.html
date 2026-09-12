@@ -1,0 +1,170 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32-C3 Image Vault</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#08111f;color:#eef6ff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:22px}
+    .wrap{width:min(920px,100%)}
+    .hero{margin-bottom:18px}
+    h1{margin:0 0 8px;font-size:clamp(30px,5vw,52px)}
+    h1 span{color:#39c4ff}
+    .sub{color:#9eb3c9;line-height:1.5}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+    .card{background:#0e1c2f;border:1px solid #1d3857;border-radius:20px;padding:20px;box-shadow:0 18px 50px rgba(0,0,0,.25)}
+    .drop{border:2px dashed #2a5f88;border-radius:16px;padding:22px;text-align:center;background:#0a1727}
+    input[type=file]{width:100%;margin:14px 0;color:#cfe9ff}
+    button{border:0;border-radius:12px;padding:13px 18px;font-weight:700;cursor:pointer;background:#29b6f6;color:#04111c;width:100%;font-size:16px}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .danger{margin-top:10px;background:#ff6b6b;color:#240606}
+    .preview{width:100%;aspect-ratio:4/3;object-fit:contain;background:#050b13;border-radius:14px;border:1px solid #203a55;margin-top:15px}
+    .hidden{display:none}
+    .bar{height:12px;border-radius:20px;background:#132b43;overflow:hidden;margin-top:14px}
+    .fill{height:100%;width:0;background:#39c4ff;transition:width .15s}
+    .row{display:flex;justify-content:space-between;gap:15px;margin-top:10px;color:#9eb3c9;font-size:14px}
+    .status{margin-top:13px;min-height:22px;color:#d8ecff}
+    .badge{display:inline-block;margin-top:8px;padding:7px 10px;border-radius:999px;background:#12304a;color:#72d7ff;font-size:13px}
+    @media(max-width:720px){.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <h1>ESP32-C3 <span>Image Vault</span></h1>
+    <div class="sub">Upload an image over Wi-Fi and store it directly inside a W25Q128 16 MB external SPI flash memory.</div>
+    <div class="badge">ESP32-VAULT • 192.168.4.1</div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Upload Image</h2>
+      <div class="drop">
+        <div>Select JPG, PNG, GIF or WEBP</div>
+        <input id="file" type="file" accept="image/*">
+        <img id="localPreview" class="preview hidden" alt="Selected image preview">
+      </div>
+      <div class="row"><span id="fileName">No file selected</span><span id="fileSize">0 KB</span></div>
+      <div class="bar"><div id="fill" class="fill"></div></div>
+      <div id="progressText" class="row"><span>Progress</span><span>0%</span></div>
+      <button id="uploadBtn" disabled>Upload to W25Q128</button>
+      <div id="status" class="status"></div>
+    </div>
+
+    <div class="card">
+      <h2>Stored Image</h2>
+      <div id="storedInfo" class="sub">Checking external flash...</div>
+      <img id="storedImage" class="preview hidden" alt="Stored image">
+      <button id="refreshBtn" style="margin-top:14px">Refresh Stored Image</button>
+      <button id="deleteBtn" class="danger">Delete Stored Image</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const fileInput = document.getElementById('file');
+const uploadBtn = document.getElementById('uploadBtn');
+const localPreview = document.getElementById('localPreview');
+const storedImage = document.getElementById('storedImage');
+const storedInfo = document.getElementById('storedInfo');
+const statusBox = document.getElementById('status');
+const fill = document.getElementById('fill');
+const progressText = document.getElementById('progressText');
+const fileName = document.getElementById('fileName');
+const fileSize = document.getElementById('fileSize');
+
+function niceSize(bytes){
+  if(bytes < 1024) return bytes + ' B';
+  if(bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/(1024*1024)).toFixed(2) + ' MB';
+}
+
+fileInput.addEventListener('change', () => {
+  const f = fileInput.files[0];
+  if(!f){ uploadBtn.disabled = true; return; }
+  if(!f.type.startsWith('image/')){
+    statusBox.textContent = 'Please select an image file.';
+    uploadBtn.disabled = true;
+    return;
+  }
+  localPreview.src = URL.createObjectURL(f);
+  localPreview.classList.remove('hidden');
+  fileName.textContent = f.name;
+  fileSize.textContent = niceSize(f.size);
+  uploadBtn.disabled = false;
+  statusBox.textContent = 'Ready to upload.';
+  fill.style.width = '0%';
+  progressText.lastElementChild.textContent = '0%';
+});
+
+uploadBtn.addEventListener('click', () => {
+  const f = fileInput.files[0];
+  if(!f) return;
+
+  const data = new FormData();
+  data.append('image', f, f.name);
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/upload');
+  uploadBtn.disabled = true;
+  statusBox.textContent = 'Uploading and writing to external flash...';
+
+  xhr.upload.onprogress = e => {
+    if(e.lengthComputable){
+      const p = Math.round((e.loaded/e.total)*100);
+      fill.style.width = p + '%';
+      progressText.lastElementChild.textContent = p + '%';
+    }
+  };
+
+  xhr.onload = () => {
+    uploadBtn.disabled = false;
+    if(xhr.status === 200){
+      statusBox.textContent = 'Upload complete. Image stored in W25Q128.';
+      fill.style.width = '100%';
+      progressText.lastElementChild.textContent = '100%';
+      loadStoredInfo();
+    }else{
+      statusBox.textContent = 'Upload failed: ' + xhr.responseText;
+    }
+  };
+
+  xhr.onerror = () => {
+    uploadBtn.disabled = false;
+    statusBox.textContent = 'Connection error during upload.';
+  };
+
+  xhr.send(data);
+});
+
+async function loadStoredInfo(){
+  try{
+    const r = await fetch('/info?x=' + Date.now(), {cache:'no-store'});
+    const info = await r.json();
+    if(info.exists){
+      storedInfo.textContent = info.name + ' • ' + niceSize(info.size) + ' • ' + info.mime;
+      storedImage.src = '/image?x=' + Date.now();
+      storedImage.classList.remove('hidden');
+    }else{
+      storedInfo.textContent = 'No image is currently stored.';
+      storedImage.classList.add('hidden');
+    }
+  }catch(e){
+    storedInfo.textContent = 'Could not read flash information.';
+  }
+}
+
+document.getElementById('refreshBtn').onclick = loadStoredInfo;
+document.getElementById('deleteBtn').onclick = async () => {
+  if(!confirm('Delete the stored image?')) return;
+  const r = await fetch('/delete', {method:'POST'});
+  statusBox.textContent = await r.text();
+  loadStoredInfo();
+};
+
+loadStoredInfo();
+</script>
+</body>
+</html>
